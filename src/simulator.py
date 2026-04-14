@@ -2,52 +2,54 @@
 Fleet Downtime Minimizer - Monte Carlo Simulator
 MPP30 Manutenção - ITA 2026
 
-Simulação estocástica para validar o schedule ótimo do MILP.
-Modela durações estocásticas (distribuição triangular) e
-falhas operacionais inesperadas (processo de Poisson).
+Simulação estocástica que valida a robustez do schedule do MILP. Em cada
+iteração:
+  - durações de SB e inspeções são amostradas de distribuições triangulares
+  - falhas operacionais ocorrem por processo de Bernoulli (aproximação de
+    Poisson semana a semana, com taxa FAILURE_RATE)
+  - o schedule é executado semana a semana respeitando a capacidade do
+    hangar; eventos que não cabem entram em fila
+
+Métricas reportadas: distribuição do downtime total, percentis (P5..P95),
+probabilidade de violação de janela e probabilidade de overflow do hangar.
 """
 
-import math
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
 import numpy as np
-from scipy import stats
 
 from src.config import (
-    HORIZON_WEEKS, WEEKS_2026, T_2026, T_2027, T_ALL,
-    FH_TARGET_2026, FH_TARGET_2027, HANGAR_CAPACITY, FH_MAX_WEEK,
-    SB_DURATION_CEIL, SB_DURATION_WEEKS_TRIANG, SB_EXPECTED_WEEKS,
+    HORIZON_WEEKS, WEEKS_2026,
+    HANGAR_CAPACITY,
+    SB_DURATION_WEEKS_TRIANG, SB_EXPECTED_WEEKS,
     INSP100_DURATION_HOURS, INSP200_DURATION_HOURS, INSP400_DURATION_HOURS,
     HOURS_PER_WEEK, FAILURE_RATE, REPAIR_DURATION_WEEKS,
-    MC_N_SIMULATIONS, MC_RANDOM_SEED, AIRCRAFT_DATA,
+    MC_N_SIMULATIONS, MC_RANDOM_SEED,
 )
-from src.models import (
-    Aircraft, Inspection, ScheduleResult, build_fleet,
-    get_inspection_level, compute_effective_window, compute_future_inspections,
-)
+from src.models import Aircraft, Inspection, ScheduleResult
 
 
 @dataclass
 class SimulationMetrics:
-    """Métricas de uma rodada de simulação."""
-    total_downtime: float = 0.0
-    sb_downtime: float = 0.0
-    insp_standalone_downtime: float = 0.0
-    insp_packaged_savings: float = 0.0
-    failure_downtime: float = 0.0
-    constraint_violations: int = 0
+    """Métricas coletadas em uma única rodada de simulação."""
+    total_downtime: float = 0.0              # SB + standalone + reparo de falhas
+    sb_downtime: float = 0.0                 # semanas-aeronave em SB
+    insp_standalone_downtime: float = 0.0    # inspeções fora do SB
+    insp_packaged_savings: float = 0.0       # economia por empacotamento
+    failure_downtime: float = 0.0            # reparo de falhas operacionais
+    constraint_violations: int = 0           # inspeções realizadas fora da janela
     fh_2026: float = 0.0
     fh_2027: float = 0.0
-    hangar_overflow_weeks: int = 0
+    hangar_overflow_weeks: int = 0           # eventos que entraram em fila
 
 
 @dataclass
 class MonteCarloResults:
-    """Resultados consolidados da simulação Monte Carlo."""
+    """Resultados consolidados sobre N simulações."""
     n_simulations: int = 0
     metrics: List[SimulationMetrics] = field(default_factory=list)
 
-    # Estatísticas do downtime total
+    # Estatísticas do downtime total (semanas-aeronave)
     mean_downtime: float = 0.0
     std_downtime: float = 0.0
     p5_downtime: float = 0.0
@@ -58,13 +60,12 @@ class MonteCarloResults:
     min_downtime: float = 0.0
     max_downtime: float = 0.0
 
-    # Probabilidade de violação
-    prob_constraint_violation: float = 0.0
-    prob_hangar_overflow: float = 0.0
+    # Probabilidades de robustez
+    prob_constraint_violation: float = 0.0   # P(violar janela em alguma inspeção)
+    prob_hangar_overflow: float = 0.0        # P(haver fila em algum momento)
 
-    # Falhas
+    # Componente de downtime por falhas
     mean_failure_downtime: float = 0.0
-    mean_n_failures: float = 0.0
 
     def compute_statistics(self):
         """Computa estatísticas a partir das métricas individuais."""
@@ -88,13 +89,13 @@ class MonteCarloResults:
 
 
 def sample_sb_duration(rng: np.random.Generator) -> float:
-    """Amostra duração do SB da distribuição triangular (em semanas)."""
-    a, c, b = SB_DURATION_WEEKS_TRIANG  # min, moda, max
+    """Amostra a duração de um SB (semanas) de Triang(min, moda, max)."""
+    a, c, b = SB_DURATION_WEEKS_TRIANG
     return float(rng.triangular(a, c, b))
 
 
 def sample_insp_duration(level: int, rng: np.random.Generator) -> float:
-    """Amostra duração de inspeção da distribuição triangular (em semanas)."""
+    """Amostra a duração de uma inspeção (semanas) a partir das horas-triang."""
     if level == 100:
         a, c, b = INSP100_DURATION_HOURS
     elif level == 200:
@@ -106,7 +107,7 @@ def sample_insp_duration(level: int, rng: np.random.Generator) -> float:
 
 
 def sample_repair_duration(rng: np.random.Generator) -> float:
-    """Amostra duração de reparo corretivo (em semanas)."""
+    """Amostra a duração de um reparo corretivo (semanas)."""
     a, c, b = REPAIR_DURATION_WEEKS
     return float(rng.triangular(a, c, b))
 
@@ -117,45 +118,39 @@ def simulate_schedule(
     rng: np.random.Generator,
     with_failures: bool = True,
 ) -> SimulationMetrics:
-    """Simula o schedule com durações estocásticas e falhas.
+    """Executa uma simulação semana a semana do schedule do MILP.
 
-    Avança semana a semana, rastreando:
-    - Ocupação do hangar (SBs + inspeções + reparos)
-    - Acúmulo de FH por aeronave
-    - Inspeções devidas e realizadas
-    - Falhas aleatórias
-
-    Args:
-        fleet: Lista de aeronaves
-        schedule: Schedule determinístico do MILP (SB start weeks, FH allocation)
-        rng: Gerador de números aleatórios
-        with_failures: Se True, inclui falhas operacionais
-
-    Returns:
-        SimulationMetrics com resultados da simulação
+    Em cada semana t, na ordem:
+      1. encerra manutenções cujo prazo expirou
+      2. inicia SBs programados (se houver slot) ou enfileira
+      3. processa fila de espera (FIFO) sempre que abre slot
+      4. aloca FH conforme o plano (aeronaves não em manutenção)
+      5. checa inspeções vencidas e agenda standalone (com violação se
+         FH ultrapassou window_high)
+      6. (opcional) gera falhas operacionais via Bernoulli(FAILURE_RATE)
     """
     metrics = SimulationMetrics()
     n = len(fleet)
     packaged_set = set(schedule.packaged_inspections)
 
     # Estado por aeronave
-    fh = [ac.fh0 for ac in fleet]           # FH acumuladas
-    in_maintenance = [False] * n             # Em manutenção?
-    maint_end_week = [0.0] * n              # Semana (fracionária) de fim da manutenção
-    maint_type = [""] * n                    # Tipo de manutenção atual
+    fh = [ac.fh0 for ac in fleet]
+    in_maintenance = [False] * n
+    maint_end_week = [0.0] * n        # semana (fracionária) em que a manutenção termina
+    maint_type = [""] * n
 
-    # SB: amostrar durações
+    # Pré-amostra a duração de cada SB programado (aeronave entra com FH "real")
     sb_durations = {}
     for ac in fleet:
         if ac.needs_sb and ac.index in schedule.sb_schedule:
             sb_durations[ac.index] = sample_sb_duration(rng)
 
-    # Rastrear inspeções pendentes por aeronave
-    pending_inspections: Dict[int, List[Inspection]] = {}
-    for ac in fleet:
-        pending_inspections[ac.index] = list(ac.future_inspections)
+    # Inspeções ainda a realizar (cópia mutável por aeronave)
+    pending_inspections: Dict[int, List[Inspection]] = {
+        ac.index: list(ac.future_inspections) for ac in fleet
+    }
 
-    # Fila de espera para hangar
+    # Fila de espera FIFO para hangar (eventos que não couberam quando criados)
     hangar_queue: List[Tuple[int, str, float]] = []  # (ac_index, type, duration)
 
     # Simulação semana a semana
