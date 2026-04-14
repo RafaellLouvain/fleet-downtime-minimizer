@@ -16,7 +16,6 @@ Abordagem:
   2. Monte Carlo para validação de robustez com durações estocásticas
      e falhas operacionais (Poisson)
 
-Autores: Rafael Lucas de Albuquerque Louvain et al.
 """
 
 import sys
@@ -47,9 +46,15 @@ def main():
     print(f"  {len(fleet)} aeronaves carregadas:")
     for ac in fleet:
         sb_str = "SB necessário" if ac.needs_sb else "Sem SB"
-        avail = f"disponível semana {ac.available_week}" if ac.available_week > 1 else "disponível"
+        avail = (
+            f"disponível semana {ac.available_week}"
+            if ac.available_week > 1
+            else "disponível"
+        )
         n_insp = len(ac.future_inspections)
-        print(f"    {ac.id}: {ac.fh0} FH, {avail}, {sb_str}, {n_insp} inspeções futuras")
+        print(
+            f"    {ac.id}: {ac.fh0} FH, {avail}, {sb_str}, {n_insp} inspeções futuras"
+        )
 
     # ----------------------------------------------------------------
     # 2. Resolver MILP
@@ -72,7 +77,8 @@ def main():
     # 3a. Sem falhas operacionais
     print("\n  --- Monte Carlo SEM falhas operacionais ---")
     mc_no_fail = run_monte_carlo(
-        fleet, result,
+        fleet,
+        result,
         n_simulations=MC_N_SIMULATIONS,
         with_failures=False,
         verbose=True,
@@ -81,7 +87,8 @@ def main():
     # 3b. Com falhas operacionais
     print("\n  --- Monte Carlo COM falhas operacionais ---")
     mc_with_fail = run_monte_carlo(
-        fleet, result,
+        fleet,
+        result,
         n_simulations=MC_N_SIMULATIONS,
         with_failures=True,
         verbose=True,
@@ -102,17 +109,29 @@ def main():
     print(f"\n  Schedule determinístico:")
     print(f"    Downtime total:  {result.total_downtime_weeks:.1f} semanas-aeronave")
     print(f"    SB downtime:     {result.sb_downtime_weeks:.1f} semanas-aeronave")
-    print(f"    Standalone insp: {result.standalone_insp_downtime_weeks:.1f} semanas-aeronave")
-    print(f"    Packaging eco:   {result.packaged_insp_savings_weeks:.1f} semanas-aeronave")
+    print(
+        f"    Standalone insp: {result.standalone_insp_downtime_weeks:.1f} semanas-aeronave"
+    )
+    print(
+        f"    Packaging eco:   {result.packaged_insp_savings_weeks:.1f} semanas-aeronave"
+    )
 
     print(f"\n  Monte Carlo (sem falhas, {MC_N_SIMULATIONS} sim.):")
-    print(f"    Downtime médio:  {mc_no_fail.mean_downtime:.1f} ± {mc_no_fail.std_downtime:.1f}")
-    print(f"    IC 90%:          [{mc_no_fail.p5_downtime:.1f}, {mc_no_fail.p95_downtime:.1f}]")
+    print(
+        f"    Downtime médio:  {mc_no_fail.mean_downtime:.1f} ± {mc_no_fail.std_downtime:.1f}"
+    )
+    print(
+        f"    IC 90%:          [{mc_no_fail.p5_downtime:.1f}, {mc_no_fail.p95_downtime:.1f}]"
+    )
     print(f"    P(violação):     {mc_no_fail.prob_constraint_violation:.1%}")
 
     print(f"\n  Monte Carlo (com falhas, {MC_N_SIMULATIONS} sim.):")
-    print(f"    Downtime médio:  {mc_with_fail.mean_downtime:.1f} ± {mc_with_fail.std_downtime:.1f}")
-    print(f"    IC 90%:          [{mc_with_fail.p5_downtime:.1f}, {mc_with_fail.p95_downtime:.1f}]")
+    print(
+        f"    Downtime médio:  {mc_with_fail.mean_downtime:.1f} ± {mc_with_fail.std_downtime:.1f}"
+    )
+    print(
+        f"    IC 90%:          [{mc_with_fail.p5_downtime:.1f}, {mc_with_fail.p95_downtime:.1f}]"
+    )
     print(f"    P(violação):     {mc_with_fail.prob_constraint_violation:.1%}")
     print(f"    Falhas (médio):  {mc_with_fail.mean_failure_downtime:.1f} semanas")
 

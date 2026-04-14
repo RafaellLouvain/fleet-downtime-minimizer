@@ -6,28 +6,31 @@ Classes para representação de aeronaves, inspeções e regras de manutenção.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
-import math
+from typing import List, Tuple
 
 from src.config import (
     INSP_INTERVALS,
     INSP100_EXPECTED_WEEKS,
     INSP200_EXPECTED_WEEKS,
     INSP400_EXPECTED_WEEKS,
-    SB_DURATION_CEIL,
-    HORIZON_WEEKS,
 )
 
 
 @dataclass
 class Inspection:
-    """Representa uma inspeção futura de uma aeronave."""
+    """Uma inspeção periódica futura de uma aeronave.
 
-    milestone: int  # FH nominal (ex: 300, 400, 600)
-    level: int  # Nível da inspeção executada (100, 200 ou 400)
-    window_low: int  # Limite inferior da janela efetiva (FH)
-    window_high: int  # Limite superior da janela efetiva (FH)
-    duration_weeks: float  # Duração esperada (semanas)
+    Cada inspeção tem um milestone nominal de FH (100, 200, 300, ...) e
+    deve ser realizada dentro da janela [window_low, window_high]. Quando
+    o milestone coincide com um múltiplo maior (ex: 200 ou 400 FH), o nível
+    da inspeção é elevado pois a inspeção maior já inclui as menores.
+    """
+
+    milestone: int          # FH nominal (ex: 100, 200, 300, 400, 500, ...)
+    level: int              # Nível executado (100, 200 ou 400)
+    window_low: int         # FH mínimo para realizar (interseção das janelas)
+    window_high: int        # FH máximo para realizar
+    duration_weeks: float   # Duração esperada (semanas)
 
     @property
     def tolerance(self) -> int:
@@ -35,11 +38,11 @@ class Inspection:
 
 
 def get_inspection_level(milestone: int) -> int:
-    """Retorna o nível da inspeção para um dado milestone.
+    """Retorna o nível da inspeção para um dado milestone de FH.
 
-    400, 800, 1200, ... → Insp400 (inclui 200 e 100)
-    200, 600, 1000, ... → Insp200 (inclui 100)
-    100, 300, 500, ...  → Insp100
+    Como inspeções de nível maior absorvem as de nível menor (nesting), num
+    milestone múltiplo de 400 só executamos a Insp400; num múltiplo de 200
+    (mas não 400), a Insp200; nos demais múltiplos de 100, a Insp100.
     """
     if milestone % 400 == 0:
         return 400
@@ -50,7 +53,7 @@ def get_inspection_level(milestone: int) -> int:
 
 
 def get_inspection_duration(level: int) -> float:
-    """Retorna a duração esperada (semanas) para um nível de inspeção."""
+    """Duração esperada (semanas) para um nível de inspeção."""
     if level == 400:
         return INSP400_EXPECTED_WEEKS
     elif level == 200:
@@ -60,25 +63,21 @@ def get_inspection_duration(level: int) -> float:
 
 
 def compute_effective_window(milestone: int) -> Tuple[int, int]:
-    """Computa a janela efetiva de execução para um milestone.
+    """Janela efetiva (FH) em torno do milestone.
 
-    Quando há nesting (ex: @400 FH → Insp400 + Insp200 + Insp100),
-    a janela efetiva é a INTERSEÇÃO das janelas individuais.
-
-    A janela de Insp100 (±10 FH) é sempre a mais restritiva.
+    Como a Insp100 tem tolerância ±10 FH (a mais restritiva) e seus
+    milestones coincidem com os de Insp200/400, a interseção das janelas
+    é sempre [milestone-10, milestone+10].
     """
     return (milestone - 10, milestone + 10)
 
 
 def compute_future_inspections(fh0: int, max_fh: int = None) -> List[Inspection]:
-    """Computa todas as inspeções futuras para uma aeronave.
+    """Gera todas as inspeções pendentes a partir de fh0 até max_fh.
 
-    Args:
-        fh0: FH atual da aeronave (inspeções até aqui já foram realizadas)
-        max_fh: FH máximo a considerar (default: fh0 + 800)
-
-    Returns:
-        Lista de Inspection ordenada por milestone
+    Itera milestones de 100 em 100 FH e cria uma Inspection para cada,
+    com nível, janela e duração já computados. Apenas milestones acima
+    de fh0 são considerados (inspeções anteriores já foram realizadas).
     """
     if max_fh is None:
         max_fh = fh0 + 3000
@@ -86,7 +85,7 @@ def compute_future_inspections(fh0: int, max_fh: int = None) -> List[Inspection]
     inspections = []
     milestone = 100
     while milestone <= max_fh:
-        if milestone > fh0:  # Apenas inspeções futuras
+        if milestone > fh0:
             level = get_inspection_level(milestone)
             low, high = compute_effective_window(milestone)
             duration = get_inspection_duration(level)
@@ -106,51 +105,22 @@ def compute_future_inspections(fh0: int, max_fh: int = None) -> List[Inspection]
 
 @dataclass
 class Aircraft:
-    """Representa uma aeronave da frota."""
+    """Uma aeronave da frota."""
 
-    id: str  # Identificador (ex: "ANV-01")
-    index: int  # Índice 0-based
-    fh0: float  # FH inicial
-    available_week: int  # Primeira semana disponível (1-indexed)
-    needs_sb: bool  # Precisa de Service Bulletin?
+    id: str                 # Identificador (ex: "ANV-01")
+    index: int              # Índice 0-based usado nas estruturas do MILP
+    fh0: float              # FH acumuladas no início do horizonte
+    available_week: int     # Primeira semana em que pode voar (1-indexed)
+    needs_sb: bool          # True se precisa do Service Bulletin antes da Insp400
     future_inspections: List[Inspection] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.future_inspections:
             self.future_inspections = compute_future_inspections(int(self.fh0))
 
-    # @property
-    # def fh_to_400(self) -> float:
-    #     """FH restantes até o milestone de 400 FH."""
-    #     return max(0, 400 - self.fh0)
-
-    # @property
-    # def insp400_window(self) -> Tuple[int, int]:
-    #     """Janela efetiva da Insp400 (primeira ocorrência futura)."""
-    #     for insp in self.future_inspections:
-    #         if insp.level == 400:
-    #             return (insp.window_low, insp.window_high)
-    #     return (390, 410)
-
-    # def inspections_packageable_at_fh(self, fh: float) -> List[Inspection]:
-    #     """Retorna inspeções que podem ser empacotadas se a aeronave
-    #     entrar em manutenção com o FH dado."""
-    #     return [
-    #         insp
-    #         for insp in self.future_inspections
-    #         if insp.window_low <= fh <= insp.window_high
-    #     ]
-
-    # def packaging_savings_at_fh(self, fh: float) -> float:
-    #     """Retorna o total de semanas de downtime economizadas por
-    #     empacotamento se entrar em manutenção com FH dado."""
-    #     return sum(
-    #         insp.duration_weeks for insp in self.inspections_packageable_at_fh(fh)
-    #     )
-
 
 def build_fleet(aircraft_data: list) -> List[Aircraft]:
-    """Constrói a frota a partir dos dados de configuração."""
+    """Constrói a frota a partir da lista de dicionários em config.AIRCRAFT_DATA."""
     fleet = []
     for i, data in enumerate(aircraft_data):
         ac = Aircraft(
@@ -166,29 +136,26 @@ def build_fleet(aircraft_data: list) -> List[Aircraft]:
 
 @dataclass
 class ScheduleResult:
-    """Resultado do scheduling de manutenção."""
+    """Saída completa do otimizador (MILP + pós-processamento)."""
 
-    # SB schedule: {aircraft_index: start_week}
-    sb_schedule: dict = field(default_factory=dict)
+    # Decisões do MILP
+    sb_schedule: dict = field(default_factory=dict)        # {ac_index: start_week}
+    fh_allocation: dict = field(default_factory=dict)      # {(ac_index, week): fh}
+    packaged_inspections: list = field(default_factory=list)  # [(ac_index, milestone)]
 
-    # FH allocation: {(aircraft_index, week): fh}
-    fh_allocation: dict = field(default_factory=dict)
-
-    # Standalone inspections: [(aircraft_index, milestone, start_week, duration_weeks)]
+    # Pós-processamento (inspeções não empacotadas no SB)
     standalone_inspections: list = field(default_factory=list)
+    # cada entrada: (ac_index, milestone, start_week, duration_weeks)
 
-    # Packaged inspections: [(aircraft_index, milestone)]
-    packaged_inspections: list = field(default_factory=list)
-
-    # Metrics
+    # Métricas agregadas (semanas-aeronave)
     total_downtime_weeks: float = 0.0
     sb_downtime_weeks: float = 0.0
     standalone_insp_downtime_weeks: float = 0.0
     packaged_insp_savings_weeks: float = 0.0
 
-    # FH at SB entry: {aircraft_index: fh}
+    # FH acumulado na entrada do SB de cada aeronave (validação da R6)
     fh_at_sb_entry: dict = field(default_factory=dict)
 
-    # Solver status
+    # Diagnóstico do solver
     solver_status: str = ""
     objective_value: float = 0.0

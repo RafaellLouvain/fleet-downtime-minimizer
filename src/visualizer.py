@@ -2,11 +2,16 @@
 Fleet Downtime Minimizer - Visualization
 MPP30 Manutenção - ITA 2026
 
-Gera Gantt chart da frota, perfis de FH, e histograma Monte Carlo.
+Gera todos os gráficos do relatório:
+  - Gantt chart da frota (SBs, inspeções, empacotamentos)
+  - Perfis de FH acumuladas por aeronave
+  - Ocupação do hangar ao longo do tempo
+  - Alocação semanal de FH (stacked area)
+  - Histograma do downtime do Monte Carlo
 """
 
 import os
-from typing import List, Dict, Optional
+from typing import List, Optional
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -15,8 +20,8 @@ import matplotlib.patches as mpatches
 from matplotlib.ticker import MaxNLocator
 
 from src.config import (
-    HORIZON_WEEKS, WEEKS_2026, T_2026, T_2027, T_ALL,
-    SB_DURATION_CEIL, SB_EXPECTED_WEEKS, AIRCRAFT_DATA,
+    HORIZON_WEEKS, WEEKS_2026,
+    SB_DURATION_CEIL,
     HANGAR_CAPACITY, FH_TARGET_2026, FH_TARGET_2027,
 )
 from src.models import Aircraft, ScheduleResult
