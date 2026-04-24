@@ -21,7 +21,6 @@ Abordagem:
 import sys
 import os
 
-# Garantir que o diretório raiz esteja no path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config import AIRCRAFT_DATA, MC_N_SIMULATIONS
