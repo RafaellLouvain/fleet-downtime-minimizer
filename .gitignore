@@ -13,7 +13,7 @@ env/
 # results/
 
 # docs
-docs/
+# docs/
 
 # IDE
 .vscode/

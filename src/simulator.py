@@ -5,8 +5,8 @@ MPP30 Manutenção - ITA 2026
 Simulação estocástica que valida a robustez do schedule do MILP. Em cada
 iteração:
   - durações de SB e inspeções são amostradas de distribuições triangulares
-  - falhas operacionais ocorrem por processo de Bernoulli (aproximação de
-    Poisson semana a semana, com taxa FAILURE_RATE)
+  - falhas operacionais ocorrem por processo de Poisson (taxa FAILURE_RATE,
+    ~1 falha por aeronave por ano)
   - o schedule é executado semana a semana respeitando a capacidade do
     hangar; eventos que não cabem entram em fila
 
@@ -127,7 +127,7 @@ def simulate_schedule(
       4. aloca FH conforme o plano (aeronaves não em manutenção)
       5. checa inspeções vencidas e agenda standalone (com violação se
          FH ultrapassou window_high)
-      6. (opcional) gera falhas operacionais via Bernoulli(FAILURE_RATE)
+      6. (opcional) gera falhas operacionais via processo de Poisson
     """
     metrics = SimulationMetrics()
     n = len(fleet)
